@@ -170,7 +170,7 @@ class _Pipeline(_HeterogenousMetaEstimator, BaseForecaster):
                         if len(levels) == 1:
                             levels = levels[0]
                         yt[ix] = y.xs(ix, level=levels, axis=1)
-                        # todo 0.25.0 - check why this cannot be easily removed
+                        # todo 0.27.0 - check why this cannot be easily removed
                         # in theory, we should get rid of the "Coverage" case treatment
                         # (the legacy naming convention was removed in 0.23.0)
                         # deal with the "Coverage" case, we need to get rid of this
@@ -391,6 +391,7 @@ class ForecastingPipeline(_Pipeline):
     """
 
     _tags = {
+        "authors": ["mloning", "fkiraly", "aiwalter"],
         "scitype:y": "both",
         "y_inner_mtype": SUPPORTED_MTYPES,
         "X_inner_mtype": SUPPORTED_MTYPES,
@@ -814,6 +815,7 @@ class TransformedTargetForecaster(_Pipeline):
     """
 
     _tags = {
+        "authors": ["mloning", "fkiraly", "aiwalter"],
         "scitype:y": "both",
         "y_inner_mtype": SUPPORTED_MTYPES,
         "X_inner_mtype": SUPPORTED_MTYPES,
@@ -842,6 +844,21 @@ class TransformedTargetForecaster(_Pipeline):
         #   create indices, and that behaviour is not tag-inspectable
         self.clone_tags(self.forecaster_, tags_to_clone)
         self._anytagis_then_set("fit_is_empty", False, True, self.steps_)
+
+        # above, we cloned the ignores-exogeneous-X tag,
+        # but we also need to check whether X is used as y in some transformer
+        # in this case X is not ignored by the pipe, even if the forecaster ignores it
+        # logic below checks whether there is at least one such transformer
+        # if there is, we override the ignores-exogeneous-X tag to False
+        # also see discussion in bug issue #5518
+        pre_ts = self.transformers_pre_
+        post_ts = self.transformers_post_
+        pre_use_y = [est.get_tag("y_inner_mtype") != "None" for _, est in pre_ts]
+        post_use_y = [est.get_tag("y_inner_mtype") != "None" for _, est in post_ts]
+        any_t_use_y = any(pre_use_y) or any(post_use_y)
+
+        if any_t_use_y:
+            self.set_tags(**{"ignores-exogeneous-X": False})
 
     @property
     def forecaster_(self):
@@ -1259,6 +1276,7 @@ class ForecastX(BaseForecaster):
     """
 
     _tags = {
+        "authors": ["fkiraly", "benheid", "yarnabrina"],
         "X_inner_mtype": SUPPORTED_MTYPES,
         "y_inner_mtype": SUPPORTED_MTYPES,
         "scitype:y": "both",
@@ -1692,6 +1710,7 @@ class Permute(_DelegatedForecaster, BaseForecaster, _HeterogenousMetaEstimator):
     """
 
     _tags = {
+        "authors": "aiwalter",
         "scitype:y": "both",
         "y_inner_mtype": ALL_TIME_SERIES_MTYPES,
         "X_inner_mtype": ALL_TIME_SERIES_MTYPES,
@@ -1711,17 +1730,8 @@ class Permute(_DelegatedForecaster, BaseForecaster, _HeterogenousMetaEstimator):
         self.steps_arg = steps_arg
 
         super().__init__()
-        tags_to_clone = [
-            "ignores-exogeneous-X",  # does estimator ignore the exogeneous X?
-            "capability:insample",
-            "capability:pred_int",  # can the estimator produce prediction intervals?
-            "capability:pred_int:insample",
-            "requires-fh-in-fit",  # is forecasting horizon already required in fit?
-            "enforce_index_type",  # index type that needs to be enforced in X/y
-            "fit_is_empty",
-        ]
 
-        self.clone_tags(self.estimator, tags_to_clone)
+        self._set_delegated_tags(estimator)
 
         self._set_permuted_estimator()
 

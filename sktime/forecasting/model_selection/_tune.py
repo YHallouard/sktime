@@ -30,6 +30,7 @@ from sktime.utils.warnings import warn
 
 class BaseGridSearch(_DelegatedForecaster):
     _tags = {
+        "authors": ["mloning", "fkiraly", "aiwalter"],
         "scitype:y": "both",
         "requires-fh-in-fit": False,
         "handles-missing-data": False,
@@ -38,7 +39,7 @@ class BaseGridSearch(_DelegatedForecaster):
         "capability:pred_int:insample": True,
     }
 
-    # todo 0.26.0: remove n_jobs, pre_dispatch parameters and all related logic
+    # todo 0.27.0: remove n_jobs, pre_dispatch parameters and all related logic
     def __init__(
         self,
         forecaster,
@@ -75,18 +76,9 @@ class BaseGridSearch(_DelegatedForecaster):
 
         super().__init__()
 
-        tags_to_clone = [
-            "requires-fh-in-fit",
-            "capability:pred_int",
-            "capability:pred_int:insample",
-            "capability:insample",
-            "ignores-exogeneous-X",
-            "handles-missing-data",
-            "y_inner_mtype",
-            "X_inner_mtype",
-            "X-y-must-have-same-index",
-            "enforce_index_type",
-        ]
+        self._set_delegated_tags(forecaster)
+
+        tags_to_clone = ["y_inner_mtype", "X_inner_mtype"]
         self.clone_tags(forecaster, tags_to_clone)
         self._extend_to_all_scitypes("y_inner_mtype")
         self._extend_to_all_scitypes("X_inner_mtype")
@@ -186,53 +178,25 @@ class BaseGridSearch(_DelegatedForecaster):
         scoring = check_scoring(self.scoring, obj=self)
         scoring_name = f"test_{scoring.name}"
 
-        # todo 0.26.0: remove this logic and only use backend_params
+        # todo 0.27.0: remove this logic and only use backend_params
         backend = self.backend
         backend_params = self.backend_params if self.backend_params else {}
         if backend in ["threading", "multiprocessing", "loky"]:
             n_jobs = self.n_jobs
             pre_dispatch = self.pre_dispatch
-            backend_params["n_jobs"] = n_jobs
-            backend_params["pre_dispatch"] = pre_dispatch
+            if n_jobs is not None:
+                backend_params["n_jobs"] = n_jobs
+            if pre_dispatch is not None:
+                backend_params["pre_dispatch"] = pre_dispatch
             if n_jobs is not None or pre_dispatch is not None:
                 warn(
                     f"in {self.__class__.__name__}, n_jobs and pre_dispatch "
-                    "parameters are deprecated and will be removed in 0.26.0. "
+                    "parameters are deprecated and will be removed in 0.27.0. "
                     "Please use n_jobs and pre_dispatch directly in the backend_params "
                     "argument instead.",
                     obj=self,
                     stacklevel=2,
                 )
-
-        def _fit_and_score(params, meta):
-            # Clone forecaster.
-            forecaster = self.forecaster.clone()
-
-            # Set parameters.
-            forecaster.set_params(**params)
-
-            # Evaluate.
-            out = evaluate(
-                forecaster,
-                cv,
-                y,
-                X,
-                strategy=self.strategy,
-                scoring=scoring,
-                error_score=self.error_score,
-            )
-
-            # Filter columns.
-            out = out.filter(items=[scoring_name, "fit_time", "pred_time"], axis=1)
-
-            # Aggregate results.
-            out = out.mean()
-            out = out.add_prefix("mean_")
-
-            # Add parameters to output table.
-            out["params"] = params
-
-            return out
 
         def evaluate_candidates(candidate_params):
             candidate_params = list(candidate_params)
@@ -247,9 +211,21 @@ class BaseGridSearch(_DelegatedForecaster):
                     )
                 )
 
+            # Set meta variables for parallelization.
+            meta = {}
+            meta["forecaster"] = self.forecaster
+            meta["y"] = y
+            meta["X"] = X
+            meta["cv"] = cv
+            meta["strategy"] = self.strategy
+            meta["scoring"] = scoring
+            meta["error_score"] = self.error_score
+            meta["scoring_name"] = scoring_name
+
             out = parallelize(
                 fun=_fit_and_score,
                 iter=candidate_params,
+                meta=meta,
                 backend=backend,
                 backend_params=backend_params,
             )
@@ -386,6 +362,35 @@ class BaseGridSearch(_DelegatedForecaster):
         return self
 
 
+def _fit_and_score(params, meta):
+    """Fit and score forecaster with given parameters.
+
+    Root level function for parallelization, called from
+    BaseGridSearchCV._fit, evaluate_candidates, within parallelize.
+    """
+    meta = meta.copy()
+    scoring_name = meta.pop("scoring_name")
+
+    # Set parameters.
+    forecaster = meta.pop("forecaster").clone()
+    forecaster.set_params(**params)
+
+    # Evaluate.
+    out = evaluate(forecaster, **meta)
+
+    # Filter columns.
+    out = out.filter(items=[scoring_name, "fit_time", "pred_time"], axis=1)
+
+    # Aggregate results.
+    out = out.mean()
+    out = out.add_prefix("mean_")
+
+    # Add parameters to output table.
+    out["params"] = params
+
+    return out
+
+
 class ForecastingGridSearchCV(BaseGridSearch):
     """Perform grid-search cross-validation to find optimal model parameters.
 
@@ -401,16 +406,16 @@ class ForecastingGridSearchCV(BaseGridSearch):
 
     Parameters
     ----------
-    forecaster : estimator object
-        The estimator should implement the sktime or scikit-learn estimator
-        interface. Either the estimator must contain a "score" function,
-        or a scoring function must be passed.
+    forecaster : sktime forecaster, BaseForecaster instance or interface compatible
+        The forecaster to tune, must implement the sktime forecaster interface.
+        sklearn regressors can be used, but must first be converted to forecasters
+        via one of the reduction compositors, e.g., via ``make_reduction``
     cv : cross-validation generator or an iterable
         e.g. SlidingWindowSplitter()
     strategy : {"refit", "update", "no-update_params"}, optional, default="refit"
         data ingestion strategy in fitting cv, passed to `evaluate` internally
         defines the ingestion mode when the forecaster sees new data when window expands
-        "refit" = forecaster is refitted to each training window
+        "refit" = a new copy of the forecaster is fitted to each training window
         "update" = forecaster is updated with training window data, in sequence provided
         "no-update_params" = fit to first training window, re-used without fit or update
     update_behaviour : str, optional, default = "full_refit"
@@ -464,6 +469,7 @@ class ForecastingGridSearchCV(BaseGridSearch):
 
         - "None": executes loop sequentally, simple list comprehension
         - "loky", "multiprocessing" and "threading": uses ``joblib.Parallel`` loops
+        - "joblib": custom and 3rd party ``joblib`` backends, e.g., ``spark``
         - "dask": uses ``dask``, requires ``dask`` package in environment
 
         Recommendation: Use "dask" or "loky" for parallel evaluate.
@@ -498,10 +504,16 @@ class ForecastingGridSearchCV(BaseGridSearch):
         Valid keys depend on the value of ``backend``:
 
         - "None": no additional parameters, ``backend_params`` is ignored
-        - "loky", "multiprocessing" and "threading":
-            any valid keys for ``joblib.Parallel`` can be passed here,
-            e.g., ``n_jobs``, with the exception of ``backend``
-            which is directly controlled by ``backend``
+        - "loky", "multiprocessing" and "threading": default ``joblib`` backends
+          any valid keys for ``joblib.Parallel`` can be passed here, e.g., ``n_jobs``,
+          with the exception of ``backend`` which is directly controlled by ``backend``.
+          If ``n_jobs`` is not passed, it will default to ``-1``, other parameters
+          will default to ``joblib`` defaults.
+        - "joblib": custom and 3rd party ``joblib`` backends, e.g., ``spark``.
+          any valid keys for ``joblib.Parallel`` can be passed here, e.g., ``n_jobs``,
+          ``backend`` must be passed as a key of ``backend_params`` in this case.
+          If ``n_jobs`` is not passed, it will default to ``-1``, other parameters
+          will default to ``joblib`` defaults.
         - "dask": any valid keys for ``dask.compute`` can be passed, e.g., ``scheduler``
 
     Attributes
@@ -537,9 +549,7 @@ class ForecastingGridSearchCV(BaseGridSearch):
     --------
     >>> from sktime.datasets import load_shampoo_sales
     >>> from sktime.forecasting.model_selection import ForecastingGridSearchCV
-    >>> from sktime.split import (
-    ...     ExpandingWindowSplitter,
-    ...     ExpandingWindowSplitter)
+    >>> from sktime.split import ExpandingWindowSplitter
     >>> from sktime.forecasting.naive import NaiveForecaster
     >>> y = load_shampoo_sales()
     >>> fh = [1,2,3]
@@ -723,16 +733,16 @@ class ForecastingRandomizedSearchCV(BaseGridSearch):
 
     Parameters
     ----------
-    forecaster : estimator object
-        The estimator should implement the sktime or scikit-learn estimator
-        interface. Either the estimator must contain a "score" function,
-        or a scoring function must be passed.
+    forecaster : sktime forecaster, BaseForecaster instance or interface compatible
+        The forecaster to tune, must implement the sktime forecaster interface.
+        sklearn regressors can be used, but must first be converted to forecasters
+        via one of the reduction compositors, e.g., via ``make_reduction``
     cv : cross-validation generator or an iterable
         e.g. SlidingWindowSplitter()
     strategy : {"refit", "update", "no-update_params"}, optional, default="refit"
         data ingestion strategy in fitting cv, passed to `evaluate` internally
         defines the ingestion mode when the forecaster sees new data when window expands
-        "refit" = forecaster is refitted to each training window
+        "refit" = a new copy of the forecaster is fitted to each training window
         "update" = forecaster is updated with training window data, in sequence provided
         "no-update_params" = fit to first training window, re-used without fit or update
     update_behaviour: str, optional, default = "full_refit"
@@ -796,6 +806,7 @@ class ForecastingRandomizedSearchCV(BaseGridSearch):
 
         - "None": executes loop sequentally, simple list comprehension
         - "loky", "multiprocessing" and "threading": uses ``joblib.Parallel`` loops
+        - "joblib": custom and 3rd party ``joblib`` backends, e.g., ``spark``
         - "dask": uses ``dask``, requires ``dask`` package in environment
 
         Recommendation: Use "dask" or "loky" for parallel evaluate.
@@ -830,10 +841,16 @@ class ForecastingRandomizedSearchCV(BaseGridSearch):
         Valid keys depend on the value of ``backend``:
 
         - "None": no additional parameters, ``backend_params`` is ignored
-        - "loky", "multiprocessing" and "threading":
-            any valid keys for ``joblib.Parallel`` can be passed here,
-            e.g., ``n_jobs``, with the exception of ``backend``
-            which is directly controlled by ``backend``
+        - "loky", "multiprocessing" and "threading": default ``joblib`` backends
+          any valid keys for ``joblib.Parallel`` can be passed here, e.g., ``n_jobs``,
+          with the exception of ``backend`` which is directly controlled by ``backend``.
+          If ``n_jobs`` is not passed, it will default to ``-1``, other parameters
+          will default to ``joblib`` defaults.
+        - "joblib": custom and 3rd party ``joblib`` backends, e.g., ``spark``.
+          any valid keys for ``joblib.Parallel`` can be passed here, e.g., ``n_jobs``,
+          ``backend`` must be passed as a key of ``backend_params`` in this case.
+          If ``n_jobs`` is not passed, it will default to ``-1``, other parameters
+          will default to ``joblib`` defaults.
         - "dask": any valid keys for ``dask.compute`` can be passed, e.g., ``scheduler``
 
     Attributes
@@ -961,10 +978,10 @@ class ForecastingSkoptSearchCV(BaseGridSearch):
 
     Parameters
     ----------
-    forecaster : estimator object.
-        The estimator should implement the sktime or scikit-learn estimator interface.
-        Either the estimator must contain a "score" function,
-        or a scoring function must be passed.
+    forecaster : sktime forecaster, BaseForecaster instance or interface compatible
+        The forecaster to tune, must implement the sktime forecaster interface.
+        sklearn regressors can be used, but must first be converted to forecasters
+        via one of the reduction compositors, e.g., via ``make_reduction``
     cv : cross-validation generator or an iterable
         Splitter used for generating validation folds.
         e.g. SlidingWindowSplitter()
@@ -1022,7 +1039,7 @@ class ForecastingSkoptSearchCV(BaseGridSearch):
     strategy : {"refit", "update", "no-update_params"}, optional, default="refit"
         data ingestion strategy in fitting cv, passed to `evaluate` internally
         defines the ingestion mode when the forecaster sees new data when window expands
-        "refit" = forecaster is refitted to each training window
+        "refit" = a new copy of the forecaster is fitted to each training window
         "update" = forecaster is updated with training window data, in sequence provided
         "no-update_params" = fit to first training window, re-used without fit or update
     update_behaviour: str, optional, default = "full_refit"
@@ -1055,6 +1072,7 @@ class ForecastingSkoptSearchCV(BaseGridSearch):
 
         - "None": executes loop sequentally, simple list comprehension
         - "loky", "multiprocessing" and "threading": uses ``joblib.Parallel`` loops
+        - "joblib": custom and 3rd party ``joblib`` backends, e.g., ``spark``
         - "dask": uses ``dask``, requires ``dask`` package in environment
 
         Recommendation: Use "dask" or "loky" for parallel evaluate.
@@ -1085,10 +1103,16 @@ class ForecastingSkoptSearchCV(BaseGridSearch):
         Valid keys depend on the value of ``backend``:
 
         - "None": no additional parameters, ``backend_params`` is ignored
-        - "loky", "multiprocessing" and "threading":
-            any valid keys for ``joblib.Parallel`` can be passed here,
-            e.g., ``n_jobs``, with the exception of ``backend``
-            which is directly controlled by ``backend``
+        - "loky", "multiprocessing" and "threading": default ``joblib`` backends
+          any valid keys for ``joblib.Parallel`` can be passed here, e.g., ``n_jobs``,
+          with the exception of ``backend`` which is directly controlled by ``backend``.
+          If ``n_jobs`` is not passed, it will default to ``-1``, other parameters
+          will default to ``joblib`` defaults.
+        - "joblib": custom and 3rd party ``joblib`` backends, e.g., ``spark``.
+          any valid keys for ``joblib.Parallel`` can be passed here, e.g., ``n_jobs``,
+          ``backend`` must be passed as a key of ``backend_params`` in this case.
+          If ``n_jobs`` is not passed, it will default to ``-1``, other parameters
+          will default to ``joblib`` defaults.
         - "dask": any valid keys for ``dask.compute`` can be passed, e.g., ``scheduler``
 
     Attributes
@@ -1141,6 +1165,8 @@ class ForecastingSkoptSearchCV(BaseGridSearch):
     """
 
     _tags = {
+        "authors": ["HazrulAkmal"],
+        "maintainers": ["HazrulAkmal"],
         "scitype:y": "both",
         "requires-fh-in-fit": False,
         "handles-missing-data": False,

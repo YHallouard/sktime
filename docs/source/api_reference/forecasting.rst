@@ -51,6 +51,8 @@ Pipelines can also be constructed using ``*``, ``+``, and ``|`` dunders.
     Permute
     HierarchyEnsembleForecaster
     FhPlexForecaster
+    IgnoreX
+    FallbackForecaster
 
 Reduction
 ---------
@@ -72,6 +74,7 @@ Use ``make_reduction`` for easy specification.
 
     DirectTabularRegressionForecaster
     DirectTimeSeriesRegressionForecaster
+    DirectReductionForecaster
     MultioutputTabularRegressionForecaster
     MultioutputTimeSeriesRegressionForecaster
     RecursiveTabularRegressionForecaster
@@ -150,6 +153,7 @@ Trend forecasters
     PolynomialTrendForecaster
     STLForecaster
     CurveFitForecaster
+    ProphetPiecewiseLinearTrendForecaster
 
 .. currentmodule:: sktime.forecasting.statsforecast
 
@@ -228,6 +232,7 @@ All "ARIMA" and "Auto-ARIMA" models below include SARIMAX capability.
     :template: class.rst
 
     ARIMA
+    StatsModelsARIMA
 
 .. currentmodule:: sktime.forecasting.sarimax
 
@@ -255,6 +260,8 @@ All "ARIMA" and "Auto-ARIMA" models below include SARIMAX capability.
 
 Auto-ARIMA models
 ~~~~~~~~~~~~~~~~~
+
+.. currentmodule:: sktime.forecasting.arima
 
 .. autosummary::
     :toctree: auto_generated/
@@ -287,6 +294,14 @@ ARCH models
 Structural time series models
 -----------------------------
 
+.. currentmodule:: sktime.forecasting.ardl
+
+.. autosummary::
+    :toctree: auto_generated/
+    :template: class.rst
+
+    ARDL
+
 .. currentmodule:: sktime.forecasting.bats
 
 .. autosummary::
@@ -302,6 +317,14 @@ Structural time series models
     :template: class.rst
 
     TBATS
+
+.. currentmodule:: sktime.forecasting.statsforecast
+
+.. autosummary::
+    :toctree: auto_generated/
+    :template: class.rst
+
+    StatsForecastAutoTBATS
 
 .. currentmodule:: sktime.forecasting.fbprophet
 
@@ -326,6 +349,20 @@ Structural time series models
     :template: class.rst
 
     DynamicFactor
+
+Transformer (deep learning) based forecasters
+---------------------------------------------
+
+.. currentmodule:: sktime.forecasting.ltsf
+
+.. autosummary::
+    :toctree: auto_generated/
+    :template: class.rst
+
+    LTSFLinearForecaster
+    LTSFDLinearForecaster
+    LTSFNLinearForecaster
+
 
 Intermittent time series forecasters
 ------------------------------------
@@ -422,25 +459,8 @@ Model Evaluation (Backtesting)
 
     evaluate
 
-Time series splitters
----------------------
+Time index splitters
+--------------------
 
-Time series splitters can be used in both evaluation and tuning.
-
-.. currentmodule:: sktime.forecasting.model_selection
-
-.. autosummary::
-    :toctree: auto_generated/
-    :template: class.rst
-
-    CutoffSplitter
-    SingleWindowSplitter
-    SlidingWindowSplitter
-    ExpandingWindowSplitter
-    ExpandingGreedySplitter
-
-.. autosummary::
-    :toctree: auto_generated/
-    :template: function.rst
-
-    temporal_train_test_split
+Evaluation and tuning can be customized using time index based splitters,
+for a list of these consult the :ref:`splitter API <split_ref>`
